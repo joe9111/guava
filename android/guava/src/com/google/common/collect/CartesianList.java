@@ -17,12 +17,13 @@ package com.google.common.collect;
 import static com.google.common.base.Preconditions.checkElementIndex;
 
 import com.google.common.annotations.GwtCompatible;
-import com.google.common.math.IntMath;
+import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import java.util.AbstractList;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.RandomAccess;
-import org.checkerframework.checker.nullness.compatqual.NullableDecl;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Implementation of {@link Lists#cartesianProduct(List)}.
@@ -32,8 +33,8 @@ import org.checkerframework.checker.nullness.compatqual.NullableDecl;
 @GwtCompatible
 final class CartesianList<E> extends AbstractList<List<E>> implements RandomAccess {
 
-  private final transient ImmutableList<List<E>> axes;
-  private final transient int[] axesSizeProduct;
+  private final ImmutableList<List<E>> axes;
+  private final int[] axesSizeProduct;
 
   static <E> List<List<E>> create(List<? extends List<? extends E>> lists) {
     ImmutableList.Builder<List<E>> axesBuilder = new ImmutableList.Builder<>(lists.size());
@@ -44,7 +45,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
       }
       axesBuilder.add(copy);
     }
-    return new CartesianList<E>(axesBuilder.build());
+    return new CartesianList<>(axesBuilder.build());
   }
 
   CartesianList(ImmutableList<List<E>> axes) {
@@ -53,7 +54,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
     axesSizeProduct[axes.size()] = 1;
     try {
       for (int i = axes.size() - 1; i >= 0; i--) {
-        axesSizeProduct[i] = IntMath.checkedMultiply(axesSizeProduct[i + 1], axes.get(i).size());
+        axesSizeProduct[i] = Math.multiplyExact(axesSizeProduct[i + 1], axes.get(i).size());
       }
     } catch (ArithmeticException e) {
       throw new IllegalArgumentException(
@@ -67,7 +68,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
   }
 
   @Override
-  public int indexOf(Object o) {
+  public int indexOf(@Nullable Object o) {
     if (!(o instanceof List)) {
       return -1;
     }
@@ -89,7 +90,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
   }
 
   @Override
-  public int lastIndexOf(Object o) {
+  public int lastIndexOf(@Nullable Object o) {
     if (!(o instanceof List)) {
       return -1;
     }
@@ -111,7 +112,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
   }
 
   @Override
-  public ImmutableList<E> get(final int index) {
+  public ImmutableList<E> get(int index) {
     checkElementIndex(index, size());
     return new ImmutableList<E>() {
 
@@ -131,6 +132,15 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
       boolean isPartialView() {
         return true;
       }
+
+      // redeclare to help optimizers with b/310253115
+      @SuppressWarnings("RedundantOverride")
+      @J2ktIncompatible // serialization
+      @Override
+      @GwtIncompatible // serialization
+      Object writeReplace() {
+        return super.writeReplace();
+      }
     };
   }
 
@@ -140,7 +150,7 @@ final class CartesianList<E> extends AbstractList<List<E>> implements RandomAcce
   }
 
   @Override
-  public boolean contains(@NullableDecl Object object) {
+  public boolean contains(@Nullable Object object) {
     if (!(object instanceof List)) {
       return false;
     }

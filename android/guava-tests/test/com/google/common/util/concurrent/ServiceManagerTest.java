@@ -16,19 +16,30 @@
 
 package com.google.common.util.concurrent;
 
+import static com.google.common.base.StandardSystemProperty.JAVA_SPECIFICATION_VERSION;
+import static com.google.common.base.StandardSystemProperty.OS_NAME;
+import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.Sets.newConcurrentHashSet;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.util.concurrent.Uninterruptibles.awaitUninterruptibly;
+import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
 import static java.util.Arrays.asList;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertThrows;
 
+import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
 import com.google.common.testing.NullPointerTester;
 import com.google.common.testing.TestLogHandler;
 import com.google.common.util.concurrent.Service.State;
 import com.google.common.util.concurrent.ServiceManager.Listener;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
@@ -42,6 +53,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import junit.framework.TestCase;
+import org.jspecify.annotations.NullUnmarked;
 
 /**
  * Tests for {@link ServiceManager}.
@@ -49,6 +61,9 @@ import junit.framework.TestCase;
  * @author Luke Sandberg
  * @author Chris Nokleberg
  */
+@NullUnmarked
+@GwtIncompatible
+@J2ktIncompatible
 public class ServiceManagerTest extends TestCase {
 
   private static class NoOpService extends AbstractService {
@@ -68,9 +83,9 @@ public class ServiceManagerTest extends TestCase {
    * of time.
    */
   private static class NoOpDelayedService extends NoOpService {
-    private long delay;
+    private final long delay;
 
-    public NoOpDelayedService(long delay) {
+    NoOpDelayedService(long delay) {
       this.delay = delay;
     }
 
@@ -79,7 +94,7 @@ public class ServiceManagerTest extends TestCase {
       new Thread() {
         @Override
         public void run() {
-          Uninterruptibles.sleepUninterruptibly(delay, TimeUnit.MILLISECONDS);
+          sleepUninterruptibly(delay, MILLISECONDS);
           notifyStarted();
         }
       }.start();
@@ -90,7 +105,7 @@ public class ServiceManagerTest extends TestCase {
       new Thread() {
         @Override
         public void run() {
-          Uninterruptibles.sleepUninterruptibly(delay, TimeUnit.MILLISECONDS);
+          sleepUninterruptibly(delay, MILLISECONDS);
           notifyStopped();
         }
       }.start();
@@ -119,8 +134,11 @@ public class ServiceManagerTest extends TestCase {
     }
   }
 
-
   public void testServiceStartupTimes() {
+    if (isWindows() && isJava8()) {
+      // Flaky there: https://github.com/google/guava/pull/6731#issuecomment-1736298607
+      return;
+    }
     Service a = new NoOpDelayedService(150);
     Service b = new NoOpDelayedService(353);
     ServiceManager serviceManager = new ServiceManager(asList(a, b));
@@ -131,19 +149,33 @@ public class ServiceManagerTest extends TestCase {
     assertThat(startupTimes.get(b)).isAtLeast(353);
   }
 
+  public void testServiceStartupDurations() {
+    if (isWindows() && isJava8()) {
+      // Flaky there: https://github.com/google/guava/pull/6731#issuecomment-1736298607
+      return;
+    }
+    Service a = new NoOpDelayedService(150);
+    Service b = new NoOpDelayedService(353);
+    ServiceManager serviceManager = new ServiceManager(asList(a, b));
+    serviceManager.startAsync().awaitHealthy();
+    ImmutableMap<Service, Duration> startupTimes = serviceManager.startupDurations();
+    assertThat(startupTimes).hasSize(2);
+    assertThat(startupTimes.get(a)).isAtLeast(Duration.ofMillis(150));
+    assertThat(startupTimes.get(b)).isAtLeast(Duration.ofMillis(353));
+  }
 
   public void testServiceStartupTimes_selfStartingServices() {
     // This tests to ensure that:
     // 1. service times are accurate when the service is started by the manager
     // 2. service times are recorded when the service is not started by the manager (but they may
     // not be accurate).
-    final Service b =
+    Service b =
         new NoOpDelayedService(353) {
           @Override
           protected void doStart() {
             super.doStart();
             // This will delay service listener execution at least 150 milliseconds
-            Uninterruptibles.sleepUninterruptibly(150, TimeUnit.MILLISECONDS);
+            sleepUninterruptibly(150, MILLISECONDS);
           }
         };
     Service a =
@@ -166,7 +198,6 @@ public class ServiceManagerTest extends TestCase {
     assertThat(startupTimes.get(b)).isNotNull();
   }
 
-
   public void testServiceStartStop() {
     Service a = new NoOpService();
     Service b = new NoOpService();
@@ -188,8 +219,7 @@ public class ServiceManagerTest extends TestCase {
     assertTrue(listener.failedServices.isEmpty());
   }
 
-
-  public void testFailStart() throws Exception {
+  public void testFailStart() {
     Service a = new NoOpService();
     Service b = new FailStartService();
     Service c = new NoOpService();
@@ -199,11 +229,7 @@ public class ServiceManagerTest extends TestCase {
     RecordingListener listener = new RecordingListener();
     manager.addListener(listener, directExecutor());
     assertState(manager, Service.State.NEW, a, b, c, d, e);
-    try {
-      manager.startAsync().awaitHealthy();
-      fail();
-    } catch (IllegalStateException expected) {
-    }
+    assertThrows(IllegalStateException.class, () -> manager.startAsync().awaitHealthy());
     assertFalse(listener.healthyCalled);
     assertState(manager, Service.State.RUNNING, a, c, e);
     assertEquals(ImmutableSet.of(b, d), listener.failedServices);
@@ -216,19 +242,14 @@ public class ServiceManagerTest extends TestCase {
     assertTrue(listener.stoppedCalled);
   }
 
-
-  public void testFailRun() throws Exception {
+  public void testFailRun() {
     Service a = new NoOpService();
     Service b = new FailRunService();
     ServiceManager manager = new ServiceManager(asList(a, b));
     RecordingListener listener = new RecordingListener();
     manager.addListener(listener, directExecutor());
     assertState(manager, Service.State.NEW, a, b);
-    try {
-      manager.startAsync().awaitHealthy();
-      fail();
-    } catch (IllegalStateException expected) {
-    }
+    assertThrows(IllegalStateException.class, () -> manager.startAsync().awaitHealthy());
     assertTrue(listener.healthyCalled);
     assertEquals(ImmutableSet.of(b), listener.failedServices);
 
@@ -239,8 +260,7 @@ public class ServiceManagerTest extends TestCase {
     assertTrue(listener.stoppedCalled);
   }
 
-
-  public void testFailStop() throws Exception {
+  public void testFailStop() {
     Service a = new NoOpService();
     Service b = new FailStopService();
     Service c = new NoOpService();
@@ -259,7 +279,7 @@ public class ServiceManagerTest extends TestCase {
     assertState(manager, Service.State.TERMINATED, a, c);
   }
 
-  public void testToString() throws Exception {
+  public void testToString() {
     Service a = new NoOpService();
     Service b = new FailStartService();
     ServiceManager manager = new ServiceManager(asList(a, b));
@@ -268,24 +288,15 @@ public class ServiceManagerTest extends TestCase {
     assertThat(toString).contains("FailStartService");
   }
 
-
   public void testTimeouts() throws Exception {
     Service a = new NoOpDelayedService(50);
     ServiceManager manager = new ServiceManager(asList(a));
     manager.startAsync();
-    try {
-      manager.awaitHealthy(1, TimeUnit.MILLISECONDS);
-      fail();
-    } catch (TimeoutException expected) {
-    }
+    assertThrows(TimeoutException.class, () -> manager.awaitHealthy(1, MILLISECONDS));
     manager.awaitHealthy(5, SECONDS); // no exception thrown
 
     manager.stopAsync();
-    try {
-      manager.awaitStopped(1, TimeUnit.MILLISECONDS);
-      fail();
-    } catch (TimeoutException expected) {
-    }
+    assertThrows(TimeoutException.class, () -> manager.awaitStopped(1, MILLISECONDS));
     manager.awaitStopped(5, SECONDS); // no exception thrown
   }
 
@@ -298,11 +309,7 @@ public class ServiceManagerTest extends TestCase {
     ServiceManager manager = new ServiceManager(asList(a));
     RecordingListener listener = new RecordingListener();
     manager.addListener(listener, directExecutor());
-    try {
-      manager.startAsync().awaitHealthy();
-      fail();
-    } catch (IllegalStateException expected) {
-    }
+    assertThrows(IllegalStateException.class, () -> manager.startAsync().awaitHealthy());
     assertTrue(listener.stoppedCalled);
   }
 
@@ -315,11 +322,7 @@ public class ServiceManagerTest extends TestCase {
     ServiceManager manager = new ServiceManager(asList(a));
     RecordingListener listener = new RecordingListener();
     manager.addListener(listener, directExecutor());
-    try {
-      manager.startAsync().awaitHealthy();
-      fail();
-    } catch (IllegalStateException expected) {
-    }
+    assertThrows(IllegalStateException.class, () -> manager.startAsync().awaitHealthy());
     assertFalse(listener.healthyCalled);
   }
 
@@ -332,7 +335,7 @@ public class ServiceManagerTest extends TestCase {
   public void testFailStart_stopOthers() throws TimeoutException {
     Service a = new FailStartService();
     Service b = new NoOpService();
-    final ServiceManager manager = new ServiceManager(asList(a, b));
+    ServiceManager manager = new ServiceManager(asList(a, b));
     manager.addListener(
         new Listener() {
           @Override
@@ -342,7 +345,7 @@ public class ServiceManagerTest extends TestCase {
         },
         directExecutor());
     manager.startAsync();
-    manager.awaitStopped(10, TimeUnit.MILLISECONDS);
+    manager.awaitStopped(10, MILLISECONDS);
   }
 
   public void testDoCancelStart() throws TimeoutException {
@@ -355,7 +358,7 @@ public class ServiceManagerTest extends TestCase {
 
           @Override
           protected void doCancelStart() {
-            assertThat(state()).isEqualTo(Service.State.STOPPING);
+            assertThat(state()).isEqualTo(State.STOPPING);
             notifyStopped();
           }
 
@@ -365,10 +368,10 @@ public class ServiceManagerTest extends TestCase {
           }
         };
 
-    final ServiceManager manager = new ServiceManager(asList(a));
+    ServiceManager manager = new ServiceManager(asList(a));
     manager.startAsync();
     manager.stopAsync();
-    manager.awaitStopped(10, TimeUnit.MILLISECONDS);
+    manager.awaitStopped(10, MILLISECONDS);
     assertThat(manager.servicesByState().keySet()).containsExactly(Service.State.TERMINATED);
   }
 
@@ -386,9 +389,9 @@ public class ServiceManagerTest extends TestCase {
             notifyStopped();
           }
         };
-    final ServiceManager manager = new ServiceManager(asList(a));
+    ServiceManager manager = new ServiceManager(asList(a));
     manager.startAsync();
-    manager.awaitStopped(10, TimeUnit.MILLISECONDS);
+    manager.awaitStopped(10, MILLISECONDS);
     assertThat(manager.servicesByState().keySet()).containsExactly(Service.State.FAILED);
   }
 
@@ -396,7 +399,7 @@ public class ServiceManagerTest extends TestCase {
       ServiceManager manager, Service.State state, Service... services) {
     Collection<Service> managerServices = manager.servicesByState().get(state);
     for (Service service : services) {
-      assertEquals(service.toString(), state, service.state());
+      assertWithMessage(service.toString()).that(service.state()).isEqualTo(state);
       assertEquals(service.toString(), service.isRunning(), state == Service.State.RUNNING);
       assertTrue(managerServices + " should contain " + service, managerServices.contains(service));
     }
@@ -412,7 +415,7 @@ public class ServiceManagerTest extends TestCase {
     logger.setLevel(Level.FINEST);
     TestLogHandler logHandler = new TestLogHandler();
     logger.addHandler(logHandler);
-    ServiceManager manager = new ServiceManager(Arrays.<Service>asList());
+    ServiceManager manager = new ServiceManager(asList());
     RecordingListener listener = new RecordingListener();
     manager.addListener(listener, directExecutor());
     manager.startAsync().awaitHealthy();
@@ -426,7 +429,7 @@ public class ServiceManagerTest extends TestCase {
     assertTrue(listener.failedServices.isEmpty());
     // check that our NoOpService is not directly observable via any of the inspection methods or
     // via logging.
-    assertEquals("ServiceManager{services=[]}", manager.toString());
+    assertThat(manager.toString()).isEqualTo("ServiceManager{services=[]}");
     assertTrue(manager.servicesByState().isEmpty());
     assertTrue(manager.startupTimes().isEmpty());
     Formatter logFormatter =
@@ -441,15 +444,43 @@ public class ServiceManagerTest extends TestCase {
     }
   }
 
+  public void testStartupFailureOutput() {
+    Logger logger = Logger.getLogger(ServiceManager.class.getName());
+    logger.setLevel(Level.SEVERE);
+    TestLogHandler logHandler = new TestLogHandler();
+    logger.addHandler(logHandler);
+    ServiceManager manager =
+        new ServiceManager(Arrays.<Service>asList(new FailRunService(), new FailStartService()));
+    // Due to the implementation of the two services we know that both are now failed.  So the
+    // following awaitHealthy call is just to get the exception.
+    manager.startAsync();
+    assertThat(manager.servicesByState().get(State.FAILED)).hasSize(2);
+    IllegalStateException e = assertThrows(IllegalStateException.class, manager::awaitHealthy);
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Expected to be healthy after starting. The following services are not running:");
+
+    Throwable[] suppressed = e.getSuppressed();
+    assertThat(suppressed).hasLength(2);
+    assertThat(suppressed[0]).hasCauseThat().isInstanceOf(IllegalStateException.class);
+    assertThat(suppressed[0]).hasCauseThat().hasMessageThat().isEqualTo("run failure");
+
+    assertThat(suppressed[1]).hasCauseThat().isInstanceOf(IllegalStateException.class);
+    assertThat(suppressed[1]).hasCauseThat().hasMessageThat().isEqualTo("start failure");
+    LogRecord record = getOnlyElement(logHandler.getStoredLogRecords());
+    // We log failures that occur after startup
+    assertThat(record.getMessage())
+        .contains("Service FailRunService [FAILED] has failed in the RUNNING state");
+  }
+
   /**
    * Tests that a ServiceManager can be fully shut down if one of its failure listeners is slow or
    * even permanently blocked.
    */
-
   public void testListenerDeadlock() throws InterruptedException {
-    final CountDownLatch failEnter = new CountDownLatch(1);
-    final CountDownLatch failLeave = new CountDownLatch(1);
-    final CountDownLatch afterStarted = new CountDownLatch(1);
+    CountDownLatch failEnter = new CountDownLatch(1);
+    CountDownLatch failLeave = new CountDownLatch(1);
+    CountDownLatch afterStarted = new CountDownLatch(1);
     Service failRunService =
         new AbstractService() {
           @Override
@@ -461,7 +492,7 @@ public class ServiceManagerTest extends TestCase {
                 // We need to wait for the main thread to leave the ServiceManager.startAsync call
                 // to
                 // ensure that the thread running the failure callbacks is not the main thread.
-                Uninterruptibles.awaitUninterruptibly(afterStarted);
+                awaitUninterruptibly(afterStarted);
                 notifyFailed(new Exception("boom"));
               }
             }.start();
@@ -472,15 +503,14 @@ public class ServiceManagerTest extends TestCase {
             notifyStopped();
           }
         };
-    final ServiceManager manager =
-        new ServiceManager(Arrays.asList(failRunService, new NoOpService()));
+    ServiceManager manager = new ServiceManager(asList(failRunService, new NoOpService()));
     manager.addListener(
         new ServiceManager.Listener() {
           @Override
           public void failure(Service service) {
             failEnter.countDown();
             // block until after the service manager is shutdown
-            Uninterruptibles.awaitUninterruptibly(failLeave);
+            awaitUninterruptibly(failLeave);
           }
         },
         directExecutor());
@@ -500,7 +530,7 @@ public class ServiceManagerTest extends TestCase {
           }
         };
     stoppingThread.start();
-    // this should be super fast since the only non stopped service is a NoOpService
+    // this should be super fast since the only non-stopped service is a NoOpService
     stoppingThread.join(1000);
     assertFalse("stopAsync has deadlocked!.", stoppingThread.isAlive());
     failLeave.countDown(); // release the background thread
@@ -519,11 +549,7 @@ public class ServiceManagerTest extends TestCase {
     logger.addHandler(logHandler);
     NoOpService service = new NoOpService();
     service.startAsync();
-    try {
-      new ServiceManager(Arrays.asList(service));
-      fail();
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(IllegalArgumentException.class, () -> new ServiceManager(asList(service)));
     service.stopAsync();
     // Nothing was logged!
     assertEquals(0, logHandler.getStoredLogRecords().size());
@@ -532,7 +558,7 @@ public class ServiceManagerTest extends TestCase {
   public void testPartiallyConstructedManager_transitionAfterAddListenerBeforeStateIsReady() {
     // The implementation of this test is pretty sensitive to the implementation :( but we want to
     // ensure that if weird things happen during construction then we get exceptions.
-    final NoOpService service1 = new NoOpService();
+    NoOpService service1 = new NoOpService();
     // This service will start service1 when addListener is called.  This simulates service1 being
     // started asynchronously.
     Service service2 =
@@ -540,62 +566,61 @@ public class ServiceManagerTest extends TestCase {
           final NoOpService delegate = new NoOpService();
 
           @Override
-          public final void addListener(Listener listener, Executor executor) {
+          public void addListener(Listener listener, Executor executor) {
             service1.startAsync();
             delegate.addListener(listener, executor);
           }
+
           // Delegates from here on down
           @Override
-          public final Service startAsync() {
+          public Service startAsync() {
             return delegate.startAsync();
           }
 
           @Override
-          public final Service stopAsync() {
+          public Service stopAsync() {
             return delegate.stopAsync();
           }
 
           @Override
-          public final void awaitRunning() {
+          public void awaitRunning() {
             delegate.awaitRunning();
           }
 
           @Override
-          public final void awaitRunning(long timeout, TimeUnit unit) throws TimeoutException {
+          public void awaitRunning(long timeout, TimeUnit unit) throws TimeoutException {
             delegate.awaitRunning(timeout, unit);
           }
 
           @Override
-          public final void awaitTerminated() {
+          public void awaitTerminated() {
             delegate.awaitTerminated();
           }
 
           @Override
-          public final void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
+          public void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
             delegate.awaitTerminated(timeout, unit);
           }
 
           @Override
-          public final boolean isRunning() {
+          public boolean isRunning() {
             return delegate.isRunning();
           }
 
           @Override
-          public final State state() {
+          public State state() {
             return delegate.state();
           }
 
           @Override
-          public final Throwable failureCause() {
+          public Throwable failureCause() {
             return delegate.failureCause();
           }
         };
-    try {
-      new ServiceManager(Arrays.asList(service1, service2));
-      fail();
-    } catch (IllegalArgumentException expected) {
-      assertThat(expected.getMessage()).contains("started transitioning asynchronously");
-    }
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class, () -> new ServiceManager(asList(service1, service2)));
+    assertThat(expected).hasMessageThat().contains("started transitioning asynchronously");
   }
 
   /**
@@ -606,21 +631,20 @@ public class ServiceManagerTest extends TestCase {
    *
    * <p>Before the bug was fixed this test would fail at least 30% of the time.
    */
-
   public void testTransitionRace() throws TimeoutException {
     for (int k = 0; k < 1000; k++) {
-      List<Service> services = Lists.newArrayList();
+      List<Service> services = new ArrayList<>();
       for (int i = 0; i < 5; i++) {
         services.add(new SnappyShutdownService(i));
       }
       ServiceManager manager = new ServiceManager(services);
       manager.startAsync().awaitHealthy();
-      manager.stopAsync().awaitStopped(10, TimeUnit.SECONDS);
+      manager.stopAsync().awaitStopped(10, SECONDS);
     }
   }
 
   /**
-   * This service will shutdown very quickly after stopAsync is called and uses a background thread
+   * This service will shut down very quickly after stopAsync is called and uses a background thread
    * so that we know that the stopping() listeners will execute on a different thread than the
    * terminated() listeners.
    */
@@ -649,7 +673,7 @@ public class ServiceManagerTest extends TestCase {
   }
 
   public void testNulls() {
-    ServiceManager manager = new ServiceManager(Arrays.<Service>asList());
+    ServiceManager manager = new ServiceManager(asList());
     new NullPointerTester()
         .setDefault(ServiceManager.Listener.class, new RecordingListener())
         .testAllPublicInstanceMethods(manager);
@@ -658,7 +682,7 @@ public class ServiceManagerTest extends TestCase {
   private static final class RecordingListener extends ServiceManager.Listener {
     volatile boolean healthyCalled;
     volatile boolean stoppedCalled;
-    final Set<Service> failedServices = Sets.newConcurrentHashSet();
+    final Set<Service> failedServices = newConcurrentHashSet();
 
     @Override
     public void healthy() {
@@ -674,5 +698,13 @@ public class ServiceManagerTest extends TestCase {
     public void failure(Service service) {
       failedServices.add(service);
     }
+  }
+
+  private static boolean isWindows() {
+    return OS_NAME.value().startsWith("Windows");
+  }
+
+  private static boolean isJava8() {
+    return JAVA_SPECIFICATION_VERSION.value().equals("1.8");
   }
 }

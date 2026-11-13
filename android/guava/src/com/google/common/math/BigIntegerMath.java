@@ -19,13 +19,11 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.math.MathPreconditions.checkNonNegative;
 import static com.google.common.math.MathPreconditions.checkPositive;
 import static com.google.common.math.MathPreconditions.checkRoundingUnnecessary;
+import static java.lang.Math.log;
 import static java.math.RoundingMode.CEILING;
 import static java.math.RoundingMode.FLOOR;
-import static java.math.RoundingMode.HALF_DOWN;
 import static java.math.RoundingMode.HALF_EVEN;
-import static java.math.RoundingMode.UNNECESSARY;
 
-import com.google.common.annotations.Beta;
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.annotations.VisibleForTesting;
@@ -47,7 +45,7 @@ import java.util.List;
  * @author Louis Wasserman
  * @since 11.0
  */
-@GwtCompatible(emulated = true)
+@GwtCompatible
 public final class BigIntegerMath {
   /**
    * Returns the smallest power of two greater than or equal to {@code x}. This is equivalent to
@@ -56,7 +54,6 @@ public final class BigIntegerMath {
    * @throws IllegalArgumentException if {@code x <= 0}
    * @since 20.0
    */
-  @Beta
   public static BigInteger ceilingPowerOfTwo(BigInteger x) {
     return BigInteger.ZERO.setBit(log2(x, CEILING));
   }
@@ -68,7 +65,6 @@ public final class BigIntegerMath {
    * @throws IllegalArgumentException if {@code x <= 0}
    * @since 20.0
    */
-  @Beta
   public static BigInteger floorPowerOfTwo(BigInteger x) {
     return BigInteger.ZERO.setBit(log2(x, FLOOR));
   }
@@ -121,10 +117,8 @@ public final class BigIntegerMath {
         BigInteger x2 = x.pow(2);
         int logX2Floor = x2.bitLength() - 1;
         return (logX2Floor < 2 * logFloor + 1) ? logFloor : logFloor + 1;
-
-      default:
-        throw new AssertionError();
     }
+    throw new AssertionError();
   }
 
   /*
@@ -192,7 +186,7 @@ public final class BigIntegerMath {
     switch (mode) {
       case UNNECESSARY:
         checkRoundingUnnecessary(floorCmp == 0);
-        // fall through
+      // fall through
       case FLOOR:
       case DOWN:
         return floorLog;
@@ -208,13 +202,12 @@ public final class BigIntegerMath {
         BigInteger x2 = x.pow(2);
         BigInteger halfPowerSquared = floorPow.pow(2).multiply(BigInteger.TEN);
         return (x2.compareTo(halfPowerSquared) <= 0) ? floorLog : floorLog + 1;
-      default:
-        throw new AssertionError();
     }
+    throw new AssertionError();
   }
 
-  private static final double LN_10 = Math.log(10);
-  private static final double LN_2 = Math.log(2);
+  private static final double LN_10 = log(10);
+  private static final double LN_2 = log(2);
 
   /**
    * Returns the square root of {@code x}, rounded with the specified rounding mode.
@@ -254,9 +247,8 @@ public final class BigIntegerMath {
          * halfSquare.
          */
         return (halfSquare.compareTo(x) >= 0) ? sqrtFloor : sqrtFloor.add(BigInteger.ONE);
-      default:
-        throw new AssertionError();
     }
+    throw new AssertionError();
   }
 
   @GwtIncompatible // TODO
@@ -335,7 +327,7 @@ public final class BigIntegerMath {
   }
 
   @GwtIncompatible
-  private static class BigIntegerToDoubleRounder extends ToDoubleRounder<BigInteger> {
+  private static final class BigIntegerToDoubleRounder extends ToDoubleRounder<BigInteger> {
     static final BigIntegerToDoubleRounder INSTANCE = new BigIntegerToDoubleRounder();
 
     private BigIntegerToDoubleRounder() {}

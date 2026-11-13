@@ -15,10 +15,13 @@
 package com.google.common.cache;
 
 import com.google.common.annotations.GwtCompatible;
+import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ExecutionError;
 import com.google.common.util.concurrent.UncheckedExecutionException;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 
@@ -33,6 +36,8 @@ import java.util.concurrent.ExecutionException;
  * <p>When evaluated as a {@link Function}, a cache yields the same result as invoking {@link
  * #getUnchecked}.
  *
+ * @param <K> the type of the cache's keys, which are not permitted to be null
+ * @param <V> the type of the cache's values, which are not permitted to be null
  * @author Charles Fry
  * @since 11.0
  */
@@ -64,6 +69,7 @@ public interface LoadingCache<K, V> extends Cache<K, V>, Function<K, V> {
    *     value
    * @throws ExecutionError if an error was thrown while loading the value
    */
+  @CanIgnoreReturnValue // TODO(b/27479612): consider removing this?
   V get(K key) throws ExecutionException;
 
   /**
@@ -90,6 +96,7 @@ public interface LoadingCache<K, V> extends Cache<K, V>, Function<K, V> {
    *     explained in the last paragraph above, this should be an unchecked exception only.)
    * @throws ExecutionError if an error was thrown while loading the value
    */
+  @CanIgnoreReturnValue // TODO(b/27479612): consider removing this?
   V getUnchecked(K key);
 
   /**
@@ -116,6 +123,7 @@ public interface LoadingCache<K, V> extends Cache<K, V>, Function<K, V> {
    * @throws ExecutionError if an error was thrown while loading the values
    * @since 11.0
    */
+  @CanIgnoreReturnValue // TODO(b/27479612): consider removing this
   ImmutableMap<K, V> getAll(Iterable<? extends K> keys) throws ExecutionException;
 
   /**
@@ -147,6 +155,8 @@ public interface LoadingCache<K, V> extends Cache<K, V>, Function<K, V> {
    *
    * @since 11.0
    */
+  @GwtIncompatible
+  @J2ktIncompatible
   void refresh(K key);
 
   /**
@@ -156,5 +166,6 @@ public interface LoadingCache<K, V> extends Cache<K, V>, Function<K, V> {
    * cause entries to be automatically loaded.</b>
    */
   @Override
+  @J2ktIncompatible
   ConcurrentMap<K, V> asMap();
 }

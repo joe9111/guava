@@ -25,7 +25,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import org.checkerframework.checker.nullness.compatqual.NullableDecl;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A {@link FutureTask} that also implements the {@link ListenableFuture} interface. Unlike {@code
@@ -40,13 +40,9 @@ import org.checkerframework.checker.nullness.compatqual.NullableDecl;
  * @author Sven Mawson
  * @since 1.0
  */
-@SuppressWarnings("ShouldNotSubclass")
 @GwtIncompatible
-public class ListenableFutureTask<V> extends FutureTask<V> implements ListenableFuture<V> {
-  // TODO(cpovirk): explore ways of making ListenableFutureTask final. There are some valid reasons
-  // such as BoundedQueueExecutorService to allow extends but it would be nice to make it final to
-  // avoid unintended usage.
-
+public final class ListenableFutureTask<V extends @Nullable Object> extends FutureTask<V>
+    implements ListenableFuture<V> {
   // The execution list to hold our listeners.
   private final ExecutionList executionList = new ExecutionList();
 
@@ -57,8 +53,8 @@ public class ListenableFutureTask<V> extends FutureTask<V> implements Listenable
    * @param callable the callable task
    * @since 10.0
    */
-  public static <V> ListenableFutureTask<V> create(Callable<V> callable) {
-    return new ListenableFutureTask<V>(callable);
+  public static <V extends @Nullable Object> ListenableFutureTask<V> create(Callable<V> callable) {
+    return new ListenableFutureTask<>(callable);
   }
 
   /**
@@ -71,15 +67,16 @@ public class ListenableFutureTask<V> extends FutureTask<V> implements Listenable
    *     ListenableFutureTask.create(runnable, null)}
    * @since 10.0
    */
-  public static <V> ListenableFutureTask<V> create(Runnable runnable, @NullableDecl V result) {
-    return new ListenableFutureTask<V>(runnable, result);
+  public static <V extends @Nullable Object> ListenableFutureTask<V> create(
+      Runnable runnable, @ParametricNullness V result) {
+    return new ListenableFutureTask<>(runnable, result);
   }
 
   ListenableFutureTask(Callable<V> callable) {
     super(callable);
   }
 
-  ListenableFutureTask(Runnable runnable, @NullableDecl V result) {
+  ListenableFutureTask(Runnable runnable, @ParametricNullness V result) {
     super(runnable, result);
   }
 
@@ -90,6 +87,7 @@ public class ListenableFutureTask<V> extends FutureTask<V> implements Listenable
 
   @CanIgnoreReturnValue
   @Override
+  @ParametricNullness
   public V get(long timeout, TimeUnit unit)
       throws TimeoutException, InterruptedException, ExecutionException {
 

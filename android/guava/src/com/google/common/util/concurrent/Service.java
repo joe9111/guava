@@ -15,6 +15,7 @@
 package com.google.common.util.concurrent;
 
 import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotMock;
 import java.util.concurrent.Executor;
@@ -52,6 +53,7 @@ import java.util.concurrent.TimeoutException;
  * @since 9.0 (in 1.0 as {@code com.google.common.base.Service})
  */
 @DoNotMock("Create an AbstractIdleService")
+@J2ktIncompatible
 @GwtIncompatible
 public interface Service {
   /**
@@ -175,61 +177,28 @@ public interface Service {
    */
   enum State {
     /** A service in this state is inactive. It does minimal work and consumes minimal resources. */
-    NEW {
-      @Override
-      boolean isTerminal() {
-        return false;
-      }
-    },
+    NEW,
 
     /** A service in this state is transitioning to {@link #RUNNING}. */
-    STARTING {
-      @Override
-      boolean isTerminal() {
-        return false;
-      }
-    },
+    STARTING,
 
     /** A service in this state is operational. */
-    RUNNING {
-      @Override
-      boolean isTerminal() {
-        return false;
-      }
-    },
+    RUNNING,
 
     /** A service in this state is transitioning to {@link #TERMINATED}. */
-    STOPPING {
-      @Override
-      boolean isTerminal() {
-        return false;
-      }
-    },
+    STOPPING,
 
     /**
      * A service in this state has completed execution normally. It does minimal work and consumes
      * minimal resources.
      */
-    TERMINATED {
-      @Override
-      boolean isTerminal() {
-        return true;
-      }
-    },
+    TERMINATED,
 
     /**
      * A service in this state has encountered a problem and may not be operational. It cannot be
      * started nor stopped.
      */
-    FAILED {
-      @Override
-      boolean isTerminal() {
-        return true;
-      }
-    };
-
-    /** Returns true if this state is terminal. */
-    abstract boolean isTerminal();
+    FAILED,
   }
 
   /**
@@ -241,6 +210,9 @@ public interface Service {
    * @since 15.0 (present as an interface in 13.0)
    */
   abstract class Listener {
+    /** Constructor for use by subclasses. */
+    protected Listener() {}
+
     /**
      * Called when the service transitions from {@linkplain State#NEW NEW} to {@linkplain
      * State#STARTING STARTING}. This occurs when {@link Service#startAsync} is called the first

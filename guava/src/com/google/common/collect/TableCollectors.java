@@ -26,15 +26,17 @@ import java.util.function.BinaryOperator;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collector;
+import org.jspecify.annotations.Nullable;
 
 /** Collectors utilities for {@code common.collect.Table} internals. */
 @GwtCompatible
 final class TableCollectors {
 
-  static <T, R, C, V> Collector<T, ?, ImmutableTable<R, C, V>> toImmutableTable(
-      Function<? super T, ? extends R> rowFunction,
-      Function<? super T, ? extends C> columnFunction,
-      Function<? super T, ? extends V> valueFunction) {
+  static <T extends @Nullable Object, R, C, V>
+      Collector<T, ?, ImmutableTable<R, C, V>> toImmutableTable(
+          Function<? super T, ? extends R> rowFunction,
+          Function<? super T, ? extends C> columnFunction,
+          Function<? super T, ? extends V> valueFunction) {
     checkNotNull(rowFunction, "rowFunction");
     checkNotNull(columnFunction, "columnFunction");
     checkNotNull(valueFunction, "valueFunction");
@@ -43,14 +45,15 @@ final class TableCollectors {
         (builder, t) ->
             builder.put(rowFunction.apply(t), columnFunction.apply(t), valueFunction.apply(t)),
         ImmutableTable.Builder::combine,
-        ImmutableTable.Builder::build);
+        ImmutableTable.Builder::buildOrThrow);
   }
 
-  static <T, R, C, V> Collector<T, ?, ImmutableTable<R, C, V>> toImmutableTable(
-      Function<? super T, ? extends R> rowFunction,
-      Function<? super T, ? extends C> columnFunction,
-      Function<? super T, ? extends V> valueFunction,
-      BinaryOperator<V> mergeFunction) {
+  static <T extends @Nullable Object, R, C, V>
+      Collector<T, ?, ImmutableTable<R, C, V>> toImmutableTable(
+          Function<? super T, ? extends R> rowFunction,
+          Function<? super T, ? extends C> columnFunction,
+          Function<? super T, ? extends V> valueFunction,
+          BinaryOperator<V> mergeFunction) {
 
     checkNotNull(rowFunction, "rowFunction");
     checkNotNull(columnFunction, "columnFunction");
@@ -64,8 +67,7 @@ final class TableCollectors {
      */
 
     return Collector.of(
-        () -> new ImmutableTableCollectorState<R, C, V>()
-        /* GWT isn't currently playing nicely with constructor references? */ ,
+        ImmutableTableCollectorState<R, C, V>::new,
         (state, input) ->
             state.put(
                 rowFunction.apply(input),
@@ -76,12 +78,18 @@ final class TableCollectors {
         state -> state.toTable());
   }
 
-  static <T, R, C, V, I extends Table<R, C, V>> Collector<T, ?, I> toTable(
-      java.util.function.Function<? super T, ? extends R> rowFunction,
-      java.util.function.Function<? super T, ? extends C> columnFunction,
-      java.util.function.Function<? super T, ? extends V> valueFunction,
-      java.util.function.Supplier<I> tableSupplier) {
-    return toTable(
+  static <
+          T extends @Nullable Object,
+          R extends @Nullable Object,
+          C extends @Nullable Object,
+          V,
+          I extends Table<R, C, V>>
+      Collector<T, ?, I> toTable(
+          Function<? super T, ? extends R> rowFunction,
+          Function<? super T, ? extends C> columnFunction,
+          Function<? super T, ? extends V> valueFunction,
+          Supplier<I> tableSupplier) {
+    return TableCollectors.<T, R, C, V, I>toTable(
         rowFunction,
         columnFunction,
         valueFunction,
@@ -91,12 +99,18 @@ final class TableCollectors {
         tableSupplier);
   }
 
-  static <T, R, C, V, I extends Table<R, C, V>> Collector<T, ?, I> toTable(
-      java.util.function.Function<? super T, ? extends R> rowFunction,
-      java.util.function.Function<? super T, ? extends C> columnFunction,
-      java.util.function.Function<? super T, ? extends V> valueFunction,
-      BinaryOperator<V> mergeFunction,
-      java.util.function.Supplier<I> tableSupplier) {
+  static <
+          T extends @Nullable Object,
+          R extends @Nullable Object,
+          C extends @Nullable Object,
+          V,
+          I extends Table<R, C, V>>
+      Collector<T, ?, I> toTable(
+          Function<? super T, ? extends R> rowFunction,
+          Function<? super T, ? extends C> columnFunction,
+          Function<? super T, ? extends V> valueFunction,
+          BinaryOperator<V> mergeFunction,
+          Supplier<I> tableSupplier) {
     checkNotNull(rowFunction);
     checkNotNull(columnFunction);
     checkNotNull(valueFunction);
@@ -135,6 +149,12 @@ final class TableCollectors {
       }
     }
 
+    /*
+     * While the current implementation returns `this`, that's not something we mean to guarantee.
+     * Anyway, the purpose of this method is to implement a BinaryOperator combiner for a Collector,
+     * so its return value will get used naturally.
+     */
+    @SuppressWarnings("CanIgnoreReturnValueSuggester")
     ImmutableTableCollectorState<R, C, V> combine(
         ImmutableTableCollectorState<R, C, V> other, BinaryOperator<V> merger) {
       for (MutableCell<R, C, V> cell : other.insertionOrder) {
@@ -180,8 +200,12 @@ final class TableCollectors {
     }
   }
 
-  private static <R, C, V> void mergeTables(
-      Table<R, C, V> table, R row, C column, V value, BinaryOperator<V> mergeFunction) {
+  private static <R extends @Nullable Object, C extends @Nullable Object, V> void mergeTables(
+      Table<R, C, V> table,
+      @ParametricNullness R row,
+      @ParametricNullness C column,
+      V value,
+      BinaryOperator<V> mergeFunction) {
     checkNotNull(value);
     V oldValue = table.get(row, column);
     if (oldValue == null) {

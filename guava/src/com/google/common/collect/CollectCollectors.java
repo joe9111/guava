@@ -17,8 +17,10 @@
 package com.google.common.collect;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Collections.singletonMap;
+import static java.util.stream.Collectors.collectingAndThen;
+import static java.util.stream.Collectors.toMap;
 
-import com.google.common.annotations.Beta;
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.base.Preconditions;
@@ -33,9 +35,8 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collector;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import org.checkerframework.checker.nullness.qual.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Collectors utilities for {@code common.collect} internals. */
 @GwtCompatible
@@ -93,16 +94,20 @@ final class CollectCollectors {
     return (Collector) EnumSetAccumulator.TO_IMMUTABLE_ENUM_SET;
   }
 
+  private static <E extends Enum<E>>
+      Collector<E, EnumSetAccumulator<E>, ImmutableSet<E>> toImmutableEnumSetGeneric() {
+    return Collector.of(
+        EnumSetAccumulator::new,
+        EnumSetAccumulator::add,
+        EnumSetAccumulator::combine,
+        EnumSetAccumulator::toImmutableSet,
+        Collector.Characteristics.UNORDERED);
+  }
+
   private static final class EnumSetAccumulator<E extends Enum<E>> {
     @SuppressWarnings({"rawtypes", "unchecked"})
     static final Collector<Enum<?>, ?, ImmutableSet<? extends Enum<?>>> TO_IMMUTABLE_ENUM_SET =
-        (Collector)
-            Collector.<Enum, EnumSetAccumulator, ImmutableSet<?>>of(
-                EnumSetAccumulator::new,
-                EnumSetAccumulator::add,
-                EnumSetAccumulator::combine,
-                EnumSetAccumulator::toImmutableSet,
-                Collector.Characteristics.UNORDERED);
+        (Collector) toImmutableEnumSetGeneric();
 
     private @Nullable EnumSet<E> set;
 
@@ -126,7 +131,12 @@ final class CollectCollectors {
     }
 
     ImmutableSet<E> toImmutableSet() {
-      return (set == null) ? ImmutableSet.<E>of() : ImmutableEnumSet.asImmutable(set);
+      if (set == null) {
+        return ImmutableSet.of();
+      }
+      ImmutableSet<E> ret = ImmutableEnumSet.asImmutable(set);
+      set = null; // subsequent manual manipulation of the accumulator mustn't affect ret
+      return ret;
     }
   }
 
@@ -139,7 +149,7 @@ final class CollectCollectors {
 
   // Multisets
 
-  static <T, E> Collector<T, ?, ImmutableMultiset<E>> toImmutableMultiset(
+  static <T extends @Nullable Object, E> Collector<T, ?, ImmutableMultiset<E>> toImmutableMultiset(
       Function<? super T, ? extends E> elementFunction, ToIntFunction<? super T> countFunction) {
     checkNotNull(elementFunction);
     checkNotNull(countFunction);
@@ -154,10 +164,11 @@ final class CollectCollectors {
         (Multiset<E> multiset) -> ImmutableMultiset.copyFromEntries(multiset.entrySet()));
   }
 
-  static <T, E, M extends Multiset<E>> Collector<T, ?, M> toMultiset(
-      Function<? super T, E> elementFunction,
-      ToIntFunction<? super T> countFunction,
-      Supplier<M> multisetSupplier) {
+  static <T extends @Nullable Object, E extends @Nullable Object, M extends Multiset<E>>
+      Collector<T, ?, M> toMultiset(
+          Function<? super T, E> elementFunction,
+          ToIntFunction<? super T> countFunction,
+          Supplier<M> multisetSupplier) {
     checkNotNull(elementFunction);
     checkNotNull(countFunction);
     checkNotNull(multisetSupplier);
@@ -172,7 +183,7 @@ final class CollectCollectors {
 
   // Maps
 
-  static <T, K, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableMap(
+  static <T extends @Nullable Object, K, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableMap(
       Function<? super T, ? extends K> keyFunction,
       Function<? super T, ? extends V> valueFunction) {
     checkNotNull(keyFunction);
@@ -181,25 +192,25 @@ final class CollectCollectors {
         ImmutableMap.Builder<K, V>::new,
         (builder, input) -> builder.put(keyFunction.apply(input), valueFunction.apply(input)),
         ImmutableMap.Builder::combine,
-        ImmutableMap.Builder::build);
+        ImmutableMap.Builder::buildOrThrow);
   }
 
-  public static <T, K, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableMap(
+  static <T extends @Nullable Object, K, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableMap(
       Function<? super T, ? extends K> keyFunction,
       Function<? super T, ? extends V> valueFunction,
       BinaryOperator<V> mergeFunction) {
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     checkNotNull(mergeFunction);
-    return Collectors.collectingAndThen(
-        Collectors.toMap(keyFunction, valueFunction, mergeFunction, LinkedHashMap::new),
-        ImmutableMap::copyOf);
+    return collectingAndThen(
+        toMap(keyFunction, valueFunction, mergeFunction, LinkedHashMap::new), ImmutableMap::copyOf);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableSortedMap<K, V>> toImmutableSortedMap(
-      Comparator<? super K> comparator,
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableSortedMap<K, V>> toImmutableSortedMap(
+          Comparator<? super K> comparator,
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction) {
     checkNotNull(comparator);
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
@@ -211,26 +222,26 @@ final class CollectCollectors {
         () -> new ImmutableSortedMap.Builder<K, V>(comparator),
         (builder, input) -> builder.put(keyFunction.apply(input), valueFunction.apply(input)),
         ImmutableSortedMap.Builder::combine,
-        ImmutableSortedMap.Builder::build,
+        ImmutableSortedMap.Builder::buildOrThrow,
         Collector.Characteristics.UNORDERED);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableSortedMap<K, V>> toImmutableSortedMap(
-      Comparator<? super K> comparator,
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction,
-      BinaryOperator<V> mergeFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableSortedMap<K, V>> toImmutableSortedMap(
+          Comparator<? super K> comparator,
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction,
+          BinaryOperator<V> mergeFunction) {
     checkNotNull(comparator);
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     checkNotNull(mergeFunction);
-    return Collectors.collectingAndThen(
-        Collectors.toMap(
-            keyFunction, valueFunction, mergeFunction, () -> new TreeMap<K, V>(comparator)),
+    return collectingAndThen(
+        toMap(keyFunction, valueFunction, mergeFunction, () -> new TreeMap<K, V>(comparator)),
         ImmutableSortedMap::copyOfSorted);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableBiMap<K, V>> toImmutableBiMap(
+  static <T extends @Nullable Object, K, V> Collector<T, ?, ImmutableBiMap<K, V>> toImmutableBiMap(
       Function<? super T, ? extends K> keyFunction,
       Function<? super T, ? extends V> valueFunction) {
     checkNotNull(keyFunction);
@@ -239,35 +250,42 @@ final class CollectCollectors {
         ImmutableBiMap.Builder<K, V>::new,
         (builder, input) -> builder.put(keyFunction.apply(input), valueFunction.apply(input)),
         ImmutableBiMap.Builder::combine,
-        ImmutableBiMap.Builder::build,
+        ImmutableBiMap.Builder::buildOrThrow,
         new Collector.Characteristics[0]);
   }
 
-  static <T, K extends Enum<K>, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableEnumMap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction) {
+  static <T extends @Nullable Object, K extends Enum<K>, V>
+      Collector<T, ?, ImmutableMap<K, V>> toImmutableEnumMap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction) {
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     return Collector.of(
         () ->
-            new EnumMapAccumulator<K, V>(
-                (v1, v2) -> {
-                  throw new IllegalArgumentException("Multiple values for key: " + v1 + ", " + v2);
-                }),
+            new EnumMapAccumulator<K, V>((v1, v2) -> {
+              throw new IllegalArgumentException("Multiple values for key: " + v1 + ", " + v2);
+            }),
         (accum, t) -> {
-          K key = checkNotNull(keyFunction.apply(t), "Null key for input %s", t);
-          V newValue = checkNotNull(valueFunction.apply(t), "Null value for input %s", t);
-          accum.put(key, newValue);
+          /*
+           * We assign these to variables before calling checkNotNull to work around a bug in our
+           * nullness checker.
+           */
+          K key = keyFunction.apply(t);
+          V newValue = valueFunction.apply(t);
+          accum.put(
+              checkNotNull(key, "Null key for input %s", t),
+              checkNotNull(newValue, "Null value for input %s", t));
         },
         EnumMapAccumulator::combine,
         EnumMapAccumulator::toImmutableMap,
         Collector.Characteristics.UNORDERED);
   }
 
-  static <T, K extends Enum<K>, V> Collector<T, ?, ImmutableMap<K, V>> toImmutableEnumMap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction,
-      BinaryOperator<V> mergeFunction) {
+  static <T extends @Nullable Object, K extends Enum<K>, V>
+      Collector<T, ?, ImmutableMap<K, V>> toImmutableEnumMap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction,
+          BinaryOperator<V> mergeFunction) {
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     checkNotNull(mergeFunction);
@@ -275,17 +293,23 @@ final class CollectCollectors {
     return Collector.of(
         () -> new EnumMapAccumulator<K, V>(mergeFunction),
         (accum, t) -> {
-          K key = checkNotNull(keyFunction.apply(t), "Null key for input %s", t);
-          V newValue = checkNotNull(valueFunction.apply(t), "Null value for input %s", t);
-          accum.put(key, newValue);
+          /*
+           * We assign these to variables before calling checkNotNull to work around a bug in our
+           * nullness checker.
+           */
+          K key = keyFunction.apply(t);
+          V newValue = valueFunction.apply(t);
+          accum.put(
+              checkNotNull(key, "Null key for input %s", t),
+              checkNotNull(newValue, "Null value for input %s", t));
         },
         EnumMapAccumulator::combine,
         EnumMapAccumulator::toImmutableMap);
   }
 
-  private static class EnumMapAccumulator<K extends Enum<K>, V> {
+  private static final class EnumMapAccumulator<K extends Enum<K>, V> {
     private final BinaryOperator<V> mergeFunction;
-    private EnumMap<K, V> map = null;
+    private @Nullable EnumMap<K, V> map = null;
 
     EnumMapAccumulator(BinaryOperator<V> mergeFunction) {
       this.mergeFunction = mergeFunction;
@@ -293,9 +317,10 @@ final class CollectCollectors {
 
     void put(K key, V value) {
       if (map == null) {
-        map = new EnumMap<>(key.getDeclaringClass());
+        map = new EnumMap<>(singletonMap(key, value));
+      } else {
+        map.merge(key, value, mergeFunction);
       }
-      map.merge(key, value, mergeFunction);
     }
 
     EnumMapAccumulator<K, V> combine(EnumMapAccumulator<K, V> other) {
@@ -310,12 +335,12 @@ final class CollectCollectors {
     }
 
     ImmutableMap<K, V> toImmutableMap() {
-      return (map == null) ? ImmutableMap.<K, V>of() : ImmutableEnumMap.asImmutable(map);
+      return (map == null) ? ImmutableMap.of() : ImmutableEnumMap.asImmutable(map);
     }
   }
 
   @GwtIncompatible
-  static <T, K extends Comparable<? super K>, V>
+  static <T extends @Nullable Object, K extends Comparable<? super K>, V>
       Collector<T, ?, ImmutableRangeMap<K, V>> toImmutableRangeMap(
           Function<? super T, Range<K>> keyFunction,
           Function<? super T, ? extends V> valueFunction) {
@@ -330,9 +355,10 @@ final class CollectCollectors {
 
   // Multimaps
 
-  static <T, K, V> Collector<T, ?, ImmutableListMultimap<K, V>> toImmutableListMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableListMultimap<K, V>> toImmutableListMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction) {
     checkNotNull(keyFunction, "keyFunction");
     checkNotNull(valueFunction, "valueFunction");
     return Collector.of(
@@ -342,12 +368,13 @@ final class CollectCollectors {
         ImmutableListMultimap.Builder::build);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableListMultimap<K, V>> flatteningToImmutableListMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends Stream<? extends V>> valuesFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableListMultimap<K, V>> flatteningToImmutableListMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends Stream<? extends V>> valuesFunction) {
     checkNotNull(keyFunction);
     checkNotNull(valuesFunction);
-    return Collectors.collectingAndThen(
+    return collectingAndThen(
         flatteningToMultimap(
             input -> checkNotNull(keyFunction.apply(input)),
             input -> valuesFunction.apply(input).peek(Preconditions::checkNotNull),
@@ -355,9 +382,10 @@ final class CollectCollectors {
         ImmutableListMultimap::copyOf);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableSetMultimap<K, V>> toImmutableSetMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableSetMultimap<K, V>> toImmutableSetMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction) {
     checkNotNull(keyFunction, "keyFunction");
     checkNotNull(valueFunction, "valueFunction");
     return Collector.of(
@@ -367,12 +395,13 @@ final class CollectCollectors {
         ImmutableSetMultimap.Builder::build);
   }
 
-  static <T, K, V> Collector<T, ?, ImmutableSetMultimap<K, V>> flatteningToImmutableSetMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends Stream<? extends V>> valuesFunction) {
+  static <T extends @Nullable Object, K, V>
+      Collector<T, ?, ImmutableSetMultimap<K, V>> flatteningToImmutableSetMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends Stream<? extends V>> valuesFunction) {
     checkNotNull(keyFunction);
     checkNotNull(valuesFunction);
-    return Collectors.collectingAndThen(
+    return collectingAndThen(
         flatteningToMultimap(
             input -> checkNotNull(keyFunction.apply(input)),
             input -> valuesFunction.apply(input).peek(Preconditions::checkNotNull),
@@ -380,10 +409,15 @@ final class CollectCollectors {
         ImmutableSetMultimap::copyOf);
   }
 
-  static <T, K, V, M extends Multimap<K, V>> Collector<T, ?, M> toMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends V> valueFunction,
-      Supplier<M> multimapSupplier) {
+  static <
+          T extends @Nullable Object,
+          K extends @Nullable Object,
+          V extends @Nullable Object,
+          M extends Multimap<K, V>>
+      Collector<T, ?, M> toMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends V> valueFunction,
+          Supplier<M> multimapSupplier) {
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     checkNotNull(multimapSupplier);
@@ -396,11 +430,15 @@ final class CollectCollectors {
         });
   }
 
-  @Beta
-  static <T, K, V, M extends Multimap<K, V>> Collector<T, ?, M> flatteningToMultimap(
-      Function<? super T, ? extends K> keyFunction,
-      Function<? super T, ? extends Stream<? extends V>> valueFunction,
-      Supplier<M> multimapSupplier) {
+  static <
+          T extends @Nullable Object,
+          K extends @Nullable Object,
+          V extends @Nullable Object,
+          M extends Multimap<K, V>>
+      Collector<T, ?, M> flatteningToMultimap(
+          Function<? super T, ? extends K> keyFunction,
+          Function<? super T, ? extends Stream<? extends V>> valueFunction,
+          Supplier<M> multimapSupplier) {
     checkNotNull(keyFunction);
     checkNotNull(valueFunction);
     checkNotNull(multimapSupplier);
@@ -416,4 +454,6 @@ final class CollectCollectors {
           return multimap1;
         });
   }
+
+  private CollectCollectors() {}
 }

@@ -22,15 +22,17 @@ import static com.google.common.util.concurrent.SequentialExecutor.WorkerRunning
 import static java.lang.System.identityHashCode;
 
 import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import com.google.common.base.Preconditions;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.errorprone.annotations.concurrent.LazyInit;
 import com.google.j2objc.annotations.RetainedWith;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.logging.Level;
-import java.util.logging.Logger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Executor ensuring that all Runnables submitted are executed in order, using the provided
@@ -46,9 +48,10 @@ import java.util.logging.Logger;
  * If an {@code Error} is thrown, the error will propagate and execution will stop until it is
  * restarted by a call to {@link #execute}.
  */
+@J2ktIncompatible
 @GwtIncompatible
 final class SequentialExecutor implements Executor {
-  private static final Logger log = Logger.getLogger(SequentialExecutor.class.getName());
+  private static final LazyLogger log = new LazyLogger(SequentialExecutor.class);
 
   enum WorkerRunningState {
     /** Runnable is not running and not queued for execution */
@@ -67,6 +70,7 @@ final class SequentialExecutor implements Executor {
   private final Deque<Runnable> queue = new ArrayDeque<>();
 
   /** see {@link WorkerRunningState} */
+  @LazyInit
   @GuardedBy("queue")
   private WorkerRunningState workerRunningState = IDLE;
 
@@ -94,10 +98,10 @@ final class SequentialExecutor implements Executor {
    * execution of tasks will stop until a call to this method is made.
    */
   @Override
-  public void execute(final Runnable task) {
+  public void execute(Runnable task) {
     checkNotNull(task);
-    final Runnable submittedTask;
-    final long oldRunCount;
+    Runnable submittedTask;
+    long oldRunCount;
     synchronized (queue) {
       // If the worker is already running (or execute() on the delegate returned successfully, and
       // the worker has yet to start) then we don't need to start the worker.
@@ -132,7 +136,8 @@ final class SequentialExecutor implements Executor {
 
     try {
       executor.execute(worker);
-    } catch (RuntimeException | Error t) {
+    } catch (Throwable t) {
+      // Any Exception is either a RuntimeException or sneaky checked exception.
       synchronized (queue) {
         boolean removed =
             (workerRunningState == IDLE || workerRunningState == QUEUING)
@@ -170,7 +175,7 @@ final class SequentialExecutor implements Executor {
 
   /** Worker that runs tasks from {@link #queue} until it is empty. */
   private final class QueueWorker implements Runnable {
-    Runnable task;
+    @Nullable Runnable task;
 
     @Override
     public void run() {
@@ -198,6 +203,7 @@ final class SequentialExecutor implements Executor {
      * will still be present. If the composed Executor is an ExecutorService, it can respond to
      * shutdown() by returning tasks queued on that Thread after {@link #worker} drains the queue.
      */
+    @SuppressWarnings("CatchingUnchecked") // sneaky checked exception
     private void workOnQueue() {
       boolean interruptedDuringTask = false;
       boolean hasSetRunning = false;
@@ -231,8 +237,8 @@ final class SequentialExecutor implements Executor {
           interruptedDuringTask |= Thread.interrupted();
           try {
             task.run();
-          } catch (RuntimeException e) {
-            log.log(Level.SEVERE, "Exception while executing runnable " + task, e);
+          } catch (Exception e) { // sneaky checked exception
+            log.get().log(Level.SEVERE, "Exception while executing runnable " + task, e);
           } finally {
             task = null;
           }

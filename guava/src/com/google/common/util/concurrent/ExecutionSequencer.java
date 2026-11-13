@@ -16,18 +16,24 @@ package com.google.common.util.concurrent;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.util.concurrent.ExecutionSequencer.RunningState.CANCELLED;
 import static com.google.common.util.concurrent.ExecutionSequencer.RunningState.NOT_RUN;
 import static com.google.common.util.concurrent.ExecutionSequencer.RunningState.STARTED;
+import static com.google.common.util.concurrent.ExecutionSequencer.RunningState.WILL_NOT_RUN;
 import static com.google.common.util.concurrent.Futures.immediateCancelledFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static java.util.Objects.requireNonNull;
 
-import com.google.common.annotations.Beta;
+import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
+import com.google.errorprone.annotations.concurrent.LazyInit;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Serializes execution of tasks, somewhat like an "asynchronous {@code synchronized} block." Each
@@ -36,7 +42,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * until the {@code Future} it returned is {@linkplain Future#isDone done} (successful, failed, or
  * cancelled).
  *
- * <p>This class has limited support for cancellation and other "early completion":
+ * <p>This class serializes execution of <i>submitted</i> tasks but not any <i>listeners</i> of
+ * those tasks.
+ *
+ * <p>Submitted tasks have a happens-before order as defined in the Java Language Specification.
+ * Tasks execute with the same happens-before order that the function calls to {@link #submit} and
+ * {@link #submitAsync} that submitted those tasks had.
+ *
+ * <p>This class has limited support for cancellation and other "early completions":
  *
  * <ul>
  *   <li>While calls to {@code submit} and {@code submitAsync} return a {@code Future} that can be
@@ -45,7 +58,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *       (However, cancellation can prevent an <i>unstarted</i> task from running.) Therefore, the
  *       next task will wait for any running callable (or pending {@code Future} returned by an
  *       {@code AsyncCallable}) to complete, without interrupting it (and without calling {@code
- *       cancel} on the {@code Future}). So beware: <i>Even if you cancel every precededing {@code
+ *       cancel} on the {@code Future}). So beware: <i>Even if you cancel every preceding {@code
  *       Future} returned by this class, the next task may still have to wait.</i>.
  *   <li>Once an {@code AsyncCallable} returns a {@code Future}, this class considers that task to
  *       be "done" as soon as <i>that</i> {@code Future} completes in any way. Notably, a {@code
@@ -56,9 +69,6 @@ import java.util.concurrent.atomic.AtomicReference;
  *       beware: <i>Your {@code AsyncCallable} should not complete its {@code Future} until it is
  *       safe for the next task to start.</i>
  * </ul>
- *
- * <p>An additional limitation: this class serializes execution of <i>tasks</i> but not any
- * <i>listeners</i> of those tasks.
  *
  * <p>This class is similar to {@link MoreExecutors#newSequentialExecutor}. This class is different
  * in a few ways:
@@ -77,7 +87,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * @since 26.0
  */
-@Beta
+@J2ktIncompatible
+@GwtIncompatible
 public final class ExecutionSequencer {
 
   private ExecutionSequencer() {}
@@ -88,10 +99,10 @@ public final class ExecutionSequencer {
   }
 
   /** This reference acts as a pointer tracking the head of a linked list of ListenableFutures. */
-  private final AtomicReference<ListenableFuture<Void>> ref =
+  private final AtomicReference<ListenableFuture<@Nullable Void>> ref =
       new AtomicReference<>(immediateVoidFuture());
 
-  private ThreadConfinedTaskQueue latestTaskQueue = new ThreadConfinedTaskQueue();
+  @LazyInit private ThreadConfinedTaskQueue latestTaskQueue = new ThreadConfinedTaskQueue();
 
   /**
    * This object is unsafely published, but avoids problematic races by relying exclusively on the
@@ -122,11 +133,13 @@ public final class ExecutionSequencer {
      * All the states where thread != currentThread are identical for our purposes, and so even
      * though it's racy, we don't care which of those values we get, so no need to synchronize.
      */
-    Thread thread;
+    @LazyInit @Nullable Thread thread;
+
     /** Only used by the thread associated with this object */
-    Runnable nextTask;
+    @Nullable TrustedListenableFutureTask<?> nextTask;
+
     /** Only used by the thread associated with this object */
-    Executor nextExecutor;
+    @Nullable Executor nextExecutor;
   }
 
   /**
@@ -136,7 +149,8 @@ public final class ExecutionSequencer {
    * execute, but if the output future is cancelled before {@link Callable#call()} is invoked,
    * {@link Callable#call()} will not be invoked.
    */
-  public <T> ListenableFuture<T> submit(final Callable<T> callable, Executor executor) {
+  public <T extends @Nullable Object> ListenableFuture<T> submit(
+      Callable<T> callable, Executor executor) {
     checkNotNull(callable);
     checkNotNull(executor);
     return submitAsync(
@@ -161,12 +175,12 @@ public final class ExecutionSequencer {
    * callable} or a callable that has begun to execute, but if the output future is cancelled before
    * {@link AsyncCallable#call()} is invoked, {@link AsyncCallable#call()} will not be invoked.
    */
-  public <T> ListenableFuture<T> submitAsync(
-      final AsyncCallable<T> callable, final Executor executor) {
+  public <T extends @Nullable Object> ListenableFuture<T> submitAsync(
+      AsyncCallable<T> callable, Executor executor) {
     checkNotNull(callable);
     checkNotNull(executor);
-    final TaskNonReentrantExecutor taskExecutor = new TaskNonReentrantExecutor(executor, this);
-    final AsyncCallable<T> task =
+    TaskNonReentrantExecutor taskExecutor = new TaskNonReentrantExecutor(executor, this);
+    AsyncCallable<T> task =
         new AsyncCallable<T>() {
           @Override
           public ListenableFuture<T> call() throws Exception {
@@ -192,61 +206,58 @@ public final class ExecutionSequencer {
      * have completed - namely after oldFuture is done, and taskFuture has either completed or been
      * cancelled before the callable started execution.
      */
-    final SettableFuture<Void> newFuture = SettableFuture.create();
+    SettableFuture<@Nullable Void> newFuture = SettableFuture.create();
 
-    final ListenableFuture<Void> oldFuture = ref.getAndSet(newFuture);
+    ListenableFuture<@Nullable Void> oldFuture = ref.getAndSet(newFuture);
 
     // Invoke our task once the previous future completes.
-    final TrustedListenableFutureTask<T> taskFuture = TrustedListenableFutureTask.create(task);
+    TrustedListenableFutureTask<T> taskFuture = TrustedListenableFutureTask.create(task);
     oldFuture.addListener(taskFuture, taskExecutor);
 
-    final ListenableFuture<T> outputFuture = Futures.nonCancellationPropagating(taskFuture);
+    ListenableFuture<T> outputFuture = Futures.nonCancellationPropagating(taskFuture);
 
     // newFuture's lifetime is determined by taskFuture, which can't complete before oldFuture
     // unless taskFuture is cancelled, in which case it falls back to oldFuture. This ensures that
     // if the future we return is cancelled, we don't begin execution of the next task until after
     // oldFuture completes.
     Runnable listener =
-        new Runnable() {
-          @Override
-          public void run() {
-            if (taskFuture.isDone()) {
-              // Since the value of oldFuture can only ever be immediateFuture(null) or setFuture of
-              // a future that eventually came from immediateFuture(null), this doesn't leak
-              // throwables or completion values.
-              newFuture.setFuture(oldFuture);
-            } else if (outputFuture.isCancelled() && taskExecutor.trySetCancelled()) {
-              // If this CAS succeeds, we know that the provided callable will never be invoked,
-              // so when oldFuture completes it is safe to allow the next submitted task to
-              // proceed. Doing this immediately here lets the next task run without waiting for
-              // the cancelled task's executor to run the noop AsyncCallable.
-              //
-              // ---
-              //
-              // If the CAS fails, the provided callable already started running (or it is about
-              // to). Our contract promises:
-              //
-              // 1. not to execute a new callable until the old one has returned
-              //
-              // If we were to cancel taskFuture, that would let the next task start while the old
-              // one is still running.
-              //
-              // Now, maybe we could tweak our implementation to not start the next task until the
-              // callable actually completes. (We could detect completion in our wrapper
-              // `AsyncCallable task`.) However, our contract also promises:
-              //
-              // 2. not to cancel any Future the user returned from an AsyncCallable
-              //
-              // We promise this because, once we cancel that Future, we would no longer be able to
-              // tell when any underlying work it is doing is done. Thus, we might start a new task
-              // while that underlying work is still running.
-              //
-              // So that is why we cancel only in the case of CAS success.
-              taskFuture.cancel(false);
-            }
+        () -> {
+          if (taskFuture.isDone()) {
+            // Since the value of oldFuture can only ever be immediateVoidFuture() or setFuture of a
+            // future that eventually came from immediateVoidFuture(), this doesn't leak throwables
+            // or completion values.
+            newFuture.setFutureInternal(oldFuture);
+          } else if (outputFuture.isCancelled() && taskExecutor.trySetCancelled()) {
+            // If this CAS succeeds, we know that the provided callable will never be invoked,
+            // so when oldFuture completes it is safe to allow the next submitted task to
+            // proceed. Doing this immediately here lets the next task run without waiting for
+            // the cancelled task's executor to run the noop AsyncCallable.
+            //
+            // ---
+            //
+            // If the CAS fails, the provided callable already started running (or it is about
+            // to). Our contract promises:
+            //
+            // 1. not to execute a new callable until the old one has returned
+            //
+            // If we were to cancel taskFuture, that would let the next task start while the old
+            // one is still running.
+            //
+            // Now, maybe we could tweak our implementation to not start the next task until the
+            // callable actually completes. (We could detect completion in our wrapper
+            // `AsyncCallable task`.) However, our contract also promises:
+            //
+            // 2. not to cancel any Future the user returned from an AsyncCallable
+            //
+            // We promise this because, once we cancel that Future, we would no longer be able to
+            // tell when any underlying work it is doing is done. Thus, we might start a new task
+            // while that underlying work is still running.
+            //
+            // So that is why we cancel only in the case of CAS success.
+            taskFuture.cancel(false);
           }
         };
-    // Adding the listener to both futures guarantees that newFuture will aways be set. Adding to
+    // Adding the listener to both futures guarantees that newFuture will always be set. Adding to
     // taskFuture guarantees completion if the callable is invoked, and adding to outputFuture
     // propagates cancellation if the callable has not yet been invoked.
     outputFuture.addListener(listener, directExecutor());
@@ -257,7 +268,7 @@ public final class ExecutionSequencer {
 
   enum RunningState {
     NOT_RUN,
-    CANCELLED,
+    WILL_NOT_RUN,
     STARTED,
   }
 
@@ -279,7 +290,6 @@ public final class ExecutionSequencer {
    * properties; for example, calling WeakReference.get() on Android will block during an
    * otherwise-concurrent GC cycle.
    */
-  @SuppressWarnings("ShouldNotSubclass") // Saving an allocation here is worth it
   private static final class TaskNonReentrantExecutor extends AtomicReference<RunningState>
       implements Executor, Runnable {
 
@@ -287,22 +297,22 @@ public final class ExecutionSequencer {
      * Used to update and read the latestTaskQueue field. Set to null once the runnable has been run
      * or queued.
      */
-    ExecutionSequencer sequencer;
+    @Nullable ExecutionSequencer sequencer;
 
     /**
      * Executor the task was set to run on. Set to null when the task has been queued, run, or
      * cancelled.
      */
-    Executor delegate;
+    @Nullable Executor delegate;
 
     /**
      * Set before calling delegate.execute(); set to null once run, so that it can be GCed; this
      * object may live on after, if submitAsync returns an incomplete future.
      */
-    Runnable task;
+    @Nullable TrustedListenableFutureTask<?> task;
 
     /** Thread that called execute(). Set in execute, cleared when delegate.execute() returns. */
-    Thread submitting;
+    @LazyInit @Nullable Thread submitting;
 
     private TaskNonReentrantExecutor(Executor delegate, ExecutionSequencer sequencer) {
       super(NOT_RUN);
@@ -321,14 +331,25 @@ public final class ExecutionSequencer {
       // from the cancelled operation and its own. This can cause one runnable to queue two tasks,
       // breaking the invariant this method relies on to iteratively run the next task after the
       // previous one completes.
-      if (get() == RunningState.CANCELLED) {
+      if (get() == RunningState.WILL_NOT_RUN) {
         delegate = null;
         sequencer = null;
         return;
       }
       submitting = Thread.currentThread();
+      TrustedListenableFutureTask<?> trustedFutureTask = (TrustedListenableFutureTask<?>) task;
+
       try {
-        ThreadConfinedTaskQueue submittingTaskQueue = sequencer.latestTaskQueue;
+        /*
+         * requireNonNull is safe because we don't null out `sequencer` except:
+         *
+         * - above, where we return (in which case we never get here)
+         *
+         * - in `run`, which can't run until this Runnable is submitted to an executor, which
+         *   doesn't happen until below. (And this Executor -- yes, the object is both a Runnable
+         *   and an Executor -- is used for only a single `execute` call.)
+         */
+        ThreadConfinedTaskQueue submittingTaskQueue = requireNonNull(sequencer).latestTaskQueue;
         if (submittingTaskQueue.thread == submitting) {
           sequencer = null;
           // Submit from inside a reentrant submit. We don't know if this one will be reentrant (and
@@ -336,14 +357,31 @@ public final class ExecutionSequencer {
           // Task must be null, since each execution on this executor can only produce one more
           // execution.
           checkState(submittingTaskQueue.nextTask == null);
-          submittingTaskQueue.nextTask = task;
-          submittingTaskQueue.nextExecutor = delegate;
+          submittingTaskQueue.nextTask = trustedFutureTask;
+          // requireNonNull(delegate) is safe for reasons similar to requireNonNull(sequencer).
+          submittingTaskQueue.nextExecutor = requireNonNull(delegate);
           delegate = null;
         } else {
-          Executor localDelegate = delegate;
+          // requireNonNull(delegate) is safe for reasons similar to requireNonNull(sequencer).
+          Executor localDelegate = requireNonNull(delegate);
           delegate = null;
-          this.task = task;
-          localDelegate.execute(this);
+          this.task = trustedFutureTask;
+          try {
+            localDelegate.execute(this);
+          } catch (RejectedExecutionException e) {
+            /*
+             * `trySetCancelled` is irrelevant when we know the task won't run and when it is
+             * harmless for our `setExceptionInternal` call here to race with a user call to
+             * `cancel`. But we do it anyway in case we want to use the `RunningState` for another
+             * purpose someday.
+             */
+            boolean unused = trySetCancelled();
+            trustedFutureTask.setExceptionInternal(e);
+            /*
+             * We don't need to clear `this.task` because no one will have a
+             * reference to `this` after we return.
+             */
+          }
         }
       } finally {
         // Important to null this out here - if we did *not* execute inline, we might still
@@ -359,7 +397,11 @@ public final class ExecutionSequencer {
     public void run() {
       Thread currentThread = Thread.currentThread();
       if (currentThread != submitting) {
-        Runnable localTask = task;
+        /*
+         * requireNonNull is safe because we set `task` before submitting this Runnable to an
+         * Executor, and we don't null it out until here.
+         */
+        Runnable localTask = requireNonNull(task);
         task = null;
         localTask.run();
         return;
@@ -369,6 +411,18 @@ public final class ExecutionSequencer {
       // latestTaskQueue, and queue rather than calling execute() directly.
       ThreadConfinedTaskQueue executingTaskQueue = new ThreadConfinedTaskQueue();
       executingTaskQueue.thread = currentThread;
+      /*
+       * requireNonNull is safe because we don't null out `sequencer` except:
+       *
+       * - after the requireNonNull call below. (And this object has its Runnable.run override
+       *   called only once, just as it has its Executor.execute override called only once.)
+       *
+       * - if we return immediately from `execute` (in which case we never get here)
+       *
+       * - in the "reentrant submit" case of `execute` (in which case we must have started running a
+       *   user task -- which means that we already got past this code (or else we exited early
+       *   above))
+       */
       // Unconditionally set; there is no risk of throwing away a queued task from another thread,
       // because in order for the current task to run on this executor the previous task must have
       // already started execution. Because each task on a TaskNonReentrantExecutor can only produce
@@ -378,21 +432,29 @@ public final class ExecutionSequencer {
       // otherwise have another task queued on to it. Note the exception to this, cancellation, is
       // specially handled in execute() - execute() calls triggered by cancellation are no-ops, and
       // thus don't count.
-      sequencer.latestTaskQueue = executingTaskQueue;
+      requireNonNull(sequencer).latestTaskQueue = executingTaskQueue;
       sequencer = null;
       try {
-        Runnable localTask = task;
+        // requireNonNull is safe, as discussed above.
+        Runnable localTask = requireNonNull(task);
         task = null;
         localTask.run();
         // Now check if our task attempted to reentrantly execute the next task.
-        Runnable queuedTask;
+        TrustedListenableFutureTask<?> queuedTask;
         Executor queuedExecutor;
-        // Intentionally using non-short-circuit operator
+        /*
+         * We used to use a non-short-circuit operator here as a nano-optimization, but it caused
+         * trouble for some transpiled compilation.
+         */
         while ((queuedTask = executingTaskQueue.nextTask) != null
-            & (queuedExecutor = executingTaskQueue.nextExecutor) != null) {
+            && (queuedExecutor = executingTaskQueue.nextExecutor) != null) {
           executingTaskQueue.nextTask = null;
           executingTaskQueue.nextExecutor = null;
-          queuedExecutor.execute(queuedTask);
+          try {
+            queuedExecutor.execute(queuedTask);
+          } catch (RejectedExecutionException e) {
+            queuedTask.setExceptionInternal(e);
+          }
         }
       } finally {
         // Null out the thread field, so that we don't leak a reference to Thread, and so that
@@ -410,7 +472,7 @@ public final class ExecutionSequencer {
     }
 
     private boolean trySetCancelled() {
-      return compareAndSet(NOT_RUN, CANCELLED);
+      return compareAndSet(NOT_RUN, WILL_NOT_RUN);
     }
   }
 }

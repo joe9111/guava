@@ -17,9 +17,11 @@ package com.google.common.io;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkPositionIndexes;
+import static java.lang.Byte.toUnsignedInt;
+import static java.lang.Math.min;
 
 import com.google.common.annotations.GwtIncompatible;
-import com.google.common.primitives.UnsignedBytes;
+import com.google.common.annotations.J2ktIncompatible;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
@@ -43,6 +45,7 @@ import java.util.Arrays;
  *
  * @author Chris Nokleberg
  */
+@J2ktIncompatible
 @GwtIncompatible
 final class ReaderInputStream extends InputStream {
   private final Reader reader;
@@ -64,8 +67,10 @@ final class ReaderInputStream extends InputStream {
 
   /** Whether we've finished reading the reader. */
   private boolean endOfInput;
+
   /** Whether we're copying encoded bytes to the caller's buffer. */
   private boolean draining;
+
   /** Whether we've successfully flushed the encoder. */
   private boolean doneFlushing;
 
@@ -116,7 +121,7 @@ final class ReaderInputStream extends InputStream {
 
   @Override
   public int read() throws IOException {
-    return (read(singleByte) == 1) ? UnsignedBytes.toInt(singleByte[0]) : -1;
+    return (read(singleByte) == 1) ? toUnsignedInt(singleByte[0]) : -1;
   }
 
   // TODO(chrisn): Consider trying to encode/flush directly to the argument byte
@@ -197,8 +202,8 @@ final class ReaderInputStream extends InputStream {
   /** Handle the case of underflow caused by needing more input characters. */
   private void readMoreChars() throws IOException {
     // Possibilities:
-    // 1) array has space available on right hand side (between limit and capacity)
-    // 2) array has space available on left hand side (before position)
+    // 1) array has space available on right-hand side (between limit and capacity)
+    // 2) array has space available on left-hand side (before position)
     // 3) array has no space available
     //
     // In case 2 we shift the existing chars to the left, and in case 3 we create a bigger
@@ -248,7 +253,7 @@ final class ReaderInputStream extends InputStream {
    * number of characters copied.
    */
   private int drain(byte[] b, int off, int len) {
-    int remaining = Math.min(len, byteBuffer.remaining());
+    int remaining = min(len, byteBuffer.remaining());
     byteBuffer.get(b, off, remaining);
     return remaining;
   }

@@ -16,14 +16,12 @@ package com.google.common.escape;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
-import com.google.common.annotations.Beta;
 import com.google.common.annotations.GwtCompatible;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
-import javax.annotation.CheckForNull;
-import org.checkerframework.checker.nullness.qual.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Simple helper class to build a "sparse" array of objects based on the indexes that were added to
@@ -34,15 +32,13 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * @author Sven Mawson
  * @since 15.0
  */
-@Beta
 @GwtCompatible
-@ElementTypesAreNonnullByDefault
 public final class CharEscaperBuilder {
   /**
    * Simple decorator that turns an array of replacement char[]s into a CharEscaper, this results in
    * a very fast escape method.
    */
-  private static class CharArrayDecorator extends CharEscaper {
+  private static final class CharArrayDecorator extends CharEscaper {
     private final char[] @Nullable [] replacements;
     private final int replaceLength;
 
@@ -68,8 +64,7 @@ public final class CharEscaperBuilder {
     }
 
     @Override
-    @CheckForNull
-    protected char[] escape(char c) {
+    protected char @Nullable [] escape(char c) {
       return c < replaceLength ? replacements[c] : null;
     }
   }
